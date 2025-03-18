@@ -1,0 +1,24 @@
+[project]
+name = "sandpiper"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Robert Laabs", email = "robert@rlaabs.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "jedi>=0.19.2",
+]
+
+[project.scripts]
+sandpiper = "sandpiper:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+]
