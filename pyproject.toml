@@ -2,7 +2,6 @@
 name = "sandpiper"
 version = "0.1.0"
 description = "Add your description here"
-readme = "README.md"
 authors = [
     { name = "Robert Laabs", email = "robert@rlaabs.com" }
 ]
@@ -12,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-sandpiper = "sandpiper:main"
+sandpiper = "sandpiper.cli:main"
 
 [build-system]
 requires = ["hatchling"]
