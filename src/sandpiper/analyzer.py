@@ -2,9 +2,10 @@ import os
 import ast
 import json
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, DefaultDict, Union
+from typing import Any, Dict, List, DefaultDict, Union
 
-def analyze_python_code(path:str) -> Dict[str, Any]:
+
+def analyze_python_code(path: str) -> Dict[str, Any]:
     """
     Analyze Python code at the given path - either a single file or directory.
     """
@@ -16,27 +17,38 @@ def analyze_python_code(path:str) -> Dict[str, Any]:
         raise ValueError(f"Path must be a Python file or directory: {path}")
 
 
-def analyze_python_file(filepath:str) -> Dict[str, Any]:
+def analyze_python_file(filepath: str) -> Dict[str, Any]:
     """
     Analyze a single Python file comprehensively.
     """
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
-            source = f.read()
-        tree = ast.parse(source)
-        lines = source.splitlines()
+            source: str = f.read()
+        tree: ast.AST = ast.parse(source)
+        lines: List[str] = source.splitlines()
     except Exception as e:
-        return {'file_info': {'filename': os.path.basename(filepath), 'path': filepath}, 'error': str(e)}
+        return {
+            'file_info': {
+                'filename': os.path.basename(filepath),
+                'path': filepath
+            },
+            'error': str(e)
+        }
 
-    imported = set()
-    result = {
+    imported: set = set()
+    result: Dict[str, Any] = {
         'file_info': {
             'filename': os.path.basename(filepath),
             'path': filepath,
             'size_bytes': os.path.getsize(filepath),
             'line_count': len(lines)
         },
-        'structure': {'imports': [], 'classes': [], 'functions': [], 'variables': []},
+        'structure': {
+            'imports': [],
+            'classes': [],
+            'functions': [],
+            'variables': []
+        },
         'metrics': {},
         'references': {},
         'unused_code': []
@@ -68,13 +80,13 @@ def analyze_python_file(filepath:str) -> Dict[str, Any]:
                 })
 
     # Collect definitions for reference tracking
-    definitions = {}
+    definitions: Dict[str, List[int]] = {}
 
     # ---- CLASSES & METHODS ----
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name not in imported:
-            cls_name = node.name
-            cls_entry = {
+            cls_name: str = node.name
+            cls_entry: Dict[str, Any] = {
                 'name': cls_name,
                 'line_start': node.lineno,
                 'docstring': ast.get_docstring(node) or '',
@@ -82,11 +94,10 @@ def analyze_python_file(filepath:str) -> Dict[str, Any]:
                 'references': []
             }
             definitions.setdefault(cls_name, []).append(node.lineno)
-            # Methods
             for child in node.body:
                 if isinstance(child, ast.FunctionDef):
-                    m_name = child.name
-                    methods_entry = {
+                    m_name: str = child.name
+                    methods_entry: Dict[str, Any] = {
                         'name': m_name,
                         'line': child.lineno,
                         'docstring': ast.get_docstring(child) or '',
@@ -100,16 +111,14 @@ def analyze_python_file(filepath:str) -> Dict[str, Any]:
     # ---- FUNCTIONS ----
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name not in imported:
-            # skip methods
-            is_method = False
-            for cls in result['structure']['classes']:
-                if any(m['name'] == node.name and m['line'] == node.lineno for m in cls['methods']):
-                    is_method = True
-                    break
+            is_method = any(
+                m['name'] == node.name and m['line'] == node.lineno
+                for cls in result['structure']['classes'] for m in cls['methods']
+            )
             if is_method:
                 continue
-            f_name = node.name
-            func_entry = {
+            f_name: str = node.name
+            func_entry: Dict[str, Any] = {
                 'name': f_name,
                 'line': node.lineno,
                 'docstring': ast.get_docstring(node) or '',
@@ -124,60 +133,52 @@ def analyze_python_file(filepath:str) -> Dict[str, Any]:
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id not in imported:
-                    v_name = target.id
-                    var_entry = {'name': v_name, 'line': target.lineno, 'references': []}
+                    v_name: str = target.id
+                    var_entry: Dict[str, Any] = {
+                        'name': v_name,
+                        'line': target.lineno,
+                        'references': []
+                    }
                     definitions.setdefault(v_name, []).append(target.lineno)
                     result['structure']['variables'].append(var_entry)
 
     # ---- REFERENCE SCANNING ----
-    # Traverse AST and record Name nodes that refer to definitions
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
-            name = node.id
-            if name in definitions:
-                # skip definition occurrence
-                if node.lineno in definitions[name]:
-                    continue
-                context = lines[node.lineno-1].strip()
-                ref_info = {'line': node.lineno, 'column': node.col_offset, 'context': context}
-                # global references
+            name: str = node.id
+            if name in definitions and node.lineno not in definitions[name]:
+                context: str = lines[node.lineno - 1].strip()
+                ref_info: Dict[str, Union[int, str]] = {
+                    'line': node.lineno,
+                    'column': node.col_offset,
+                    'context': context
+                }
                 result['references'].setdefault(name, []).append(ref_info)
-                # structure-level
-                # classes
-                for cls in result['structure']['classes']:
-                    if cls['name'] == name:
-                        cls['references'].append(ref_info)
-                    for m in cls['methods']:
-                        if m['name'] == name:
-                            m['references'].append(ref_info)
-                # functions
-                for f in result['structure']['functions']:
-                    if f['name'] == name:
-                        f['references'].append(ref_info)
-                # variables
-                for v in result['structure']['variables']:
-                    if v['name'] == name:
-                        v['references'].append(ref_info)
 
     # ---- METRICS ----
-    comp = defaultdict(int)
-    def visit(n):
-        if isinstance(n, (ast.If, ast.IfExp)): comp['conditionals'] += 1
-        if isinstance(n, (ast.For, ast.While, ast.AsyncFor)): comp['loops'] += 1
-        if isinstance(n, ast.Try): comp['exceptions'] += 1 + len(n.handlers)
-        if isinstance(n, ast.BoolOp): comp['boolean_ops'] += 1
-        if isinstance(n, ast.Call): comp['function_calls'] += 1
-        for c in ast.iter_child_nodes(n): visit(c)
+    comp: DefaultDict[str, int] = defaultdict(int)
+
+    def visit(n: ast.AST) -> None:
+        if isinstance(n, (ast.If, ast.IfExp)):
+            comp['conditionals'] += 1
+        if isinstance(n, (ast.For, ast.While, ast.AsyncFor)):
+            comp['loops'] += 1
+        if isinstance(n, ast.Try):
+            comp['exceptions'] += 1 + len(n.handlers)
+        if isinstance(n, ast.BoolOp):
+            comp['boolean_ops'] += 1
+        if isinstance(n, ast.Call):
+            comp['function_calls'] += 1
+        for c in ast.iter_child_nodes(n):
+            visit(c)
+
     visit(tree)
-    total_cond = comp['conditionals']
-    total_loops = comp['loops']
-    total_ex = comp['exceptions']
-    total_bool = comp['boolean_ops']
     result['metrics'] = {
-        'conditional_count': total_cond,
-        'loop_count': total_loops,
+        'conditional_count': comp.get('conditionals', 0),
+        'loop_count': comp.get('loops', 0),
         'detailed_complexity': dict(comp),
-        'complexity': 1 + total_cond + total_loops + total_ex + total_bool
+        'complexity': 1 + comp.get('conditionals', 0) + comp.get('loops', 0)
+                     + comp.get('exceptions', 0) + comp.get('boolean_ops', 0)
     }
 
     # ---- SUMMARY ----
@@ -187,78 +188,135 @@ def analyze_python_file(filepath:str) -> Dict[str, Any]:
         'function_count': len(result['structure']['functions']),
         'import_count': len(result['structure']['imports']),
         'variable_count': len(result['structure']['variables']),
-        'unused_count': len(result['unused_code'])
+        'unused_count': len(result.get('unused_code', []))
     }
 
     return result
 
 
-def analyze_python_directory(directory):
-    results = {'directory': directory, 'files': [], 'summary': defaultdict(int), 'unused_code': []}
-    for root, _, files in os.walk(directory):
+def analyze_python_directory(
+    directory: str,
+    include_imports: bool = False,
+    include_imported_code: bool = False,
+    exclude_tests: bool = False
+) -> Dict[str, Any]:
+    """
+    Analyze all Python files in a directory structure.
+    Options:
+      - include_imports: retain import details in file structures
+      - include_imported_code: traverse vendor/virtualenv dirs
+      - exclude_tests: skip test files and directories (paths or names starting with 'test')
+    """
+    ignore_dirs = {'.venv', 'venv', 'env', '__pycache__', '.git'}
+    results: Dict[str, Any] = {
+        'directory': directory,
+        'files': [],
+        'summary': defaultdict(int),
+        'unused_code': []
+    }
+    for root, dirs, files in os.walk(directory):
+        # Skip vendor dirs
+        if not include_imported_code:
+            dirs[:] = [d for d in dirs if d not in ignore_dirs]
+        # Skip test dirs
+        if exclude_tests:
+            dirs[:] = [d for d in dirs if not d.lower().startswith('test')]
         for file in files:
-            if file.endswith('.py'):
-                res = analyze_python_file(os.path.join(root, file))
-                results['files'].append(res)
-                # aggregate summaries
-                for k in ('class_count','method_count','function_count','import_count','variable_count','unused_count'):
-                    results['summary'][k] += res['summary'].get(k, 0)
-    count = len(results['files']) or 1
-    results['summary']['avg_complexity'] = round(sum(f['metrics']['complexity'] for f in results['files'])/count,2)
-    results['summary']['avg_docstring_coverage'] = round(sum(f['metrics'].get('docstring_coverage',0) for f in results['files'])/count,2)
+            if not file.endswith('.py'):
+                continue
+            # Skip test files
+            if exclude_tests and file.lower().startswith('test_') or file.lower().endswith('_test.py'):
+                continue
+            file_path = os.path.join(root, file)
+            file_result = analyze_python_file(file_path)
+            if not include_imports:
+                file_result['structure'].pop('imports', None)
+                file_result['summary']['import_count'] = 0
+            results['files'].append(file_result)
+            for k, v in file_result['summary'].items():
+                results['summary'][k] += v  # type: ignore
+
+    total_files: int = len(results['files']) or 1
+    total_complexity: int = sum(f['metrics'].get('complexity', 0) for f in results['files'])
+    results['summary']['avg_complexity'] = round(total_complexity / total_files, 2)
     results['module_dependencies'] = find_module_dependencies(results['files'])
     return results
 
 
-def find_module_dependencies(files):
-    deps = {}
+def find_module_dependencies(files: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    deps: Dict[str, List[str]] = {}
     for f in files:
         name = os.path.splitext(f['file_info']['filename'])[0]
         deps[name] = []
-        for imp in f['structure']['imports']:
-            mod = imp.get('module', imp['name']).split('.')[0]
-            if mod != name and mod in deps and mod not in deps[name]:
+        for imp in f.get('structure', {}).get('imports', []):
+            mod = imp.get('module', imp.get('name', '')).split('.')[0]
+            if mod and mod != name and mod in deps and mod not in deps[name]:
                 deps[name].append(mod)
     return deps
 
 
-def generate_file_code_map(file_result):
-    """
-    Produce a high-level summary of a single file's structure for LLM consumption.
-    """
+def generate_file_code_map(file_result: Dict[str, Any]) -> Dict[str, Any]:
     return {
         'filename': file_result['file_info']['filename'],
         'classes': [
             {
-                'name': c['name'], 'docstring': c['docstring'],
-                'methods': [{ 'name': m['name'], 'docstring': m['docstring'], 'parameters': m['parameters'] } for m in c['methods']]
-            } for c in file_result['structure']['classes']
+                'name': c['name'],
+                'docstring': c['docstring'],
+                'methods': [
+                    { 'name': m['name'], 'docstring': m['docstring'], 'parameters': m['parameters'] }
+                    for m in c.get('methods', [])
+                ]
+            }
+            for c in file_result.get('structure', {}).get('classes', [])
         ],
         'functions': [
             { 'name': f['name'], 'docstring': f['docstring'], 'parameters': f['parameters'] }
-            for f in file_result['structure']['functions']
+            for f in file_result.get('structure', {}).get('functions', [])
         ],
-        'variables': [v['name'] for v in file_result['structure']['variables']]
+        'variables': [v['name'] for v in file_result.get('structure', {}).get('variables', [])]
     }
 
 
-def generate_code_map(results):
-    """
-    Produce an aggregated code map across all analyzed files.
-    """
+def generate_code_map(results: Dict[str, Any]) -> Dict[str, Any]:
     if 'directory' in results:
         return { f['file_info']['filename']: generate_file_code_map(f) for f in results['files'] }
     else:
         return { results['file_info']['filename']: generate_file_code_map(results) }
 
+
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description='Analyze Python code')
     parser.add_argument('path', help='Path to analyze')
-    parser.add_argument('--json','-j',help='Output JSON')
+    parser.add_argument('--json', '-j', help='Output JSON')
+    parser.add_argument(
+        '--include-imports',
+        action='store_true',
+        help='Include import statements in output'
+    )
+    parser.add_argument(
+        '--include-imported-code',
+        action='store_true',
+        help='Include vendor/imported code directories in directory scan'
+    )
+    parser.add_argument(
+        '--exclude-tests',
+        action='store_true',
+        help='Exclude test files and directories from scan'
+    )
     args = parser.parse_args()
-    res = analyze_python_code(args.path)
+
+    if os.path.isdir(args.path):
+        res = analyze_python_directory(
+            args.path,
+            include_imports=args.include_imports,
+            include_imported_code=args.include_imported_code,
+            exclude_tests=args.exclude_tests
+        )
+    else:
+        res = analyze_python_file(args.path)
     print(res)
     if args.json:
-        with open(args.json,'w',encoding='utf-8') as f:
-            json.dump(res,f,indent=2)
+        with open(args.json, 'w', encoding='utf-8') as f:
+            json.dump(res, f, indent=2)
