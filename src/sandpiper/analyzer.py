@@ -2,7 +2,10 @@ import os
 import ast
 import json
 from collections import defaultdict
-from typing import Any, Dict, List, DefaultDict, Union
+from typing import Any, Dict, List, DefaultDict, Union, Optional
+import matplotlib.pyplot as plt
+import networkx as nx
+
 
 
 def analyze_python_code(path: str) -> Dict[str, Any]:
@@ -282,6 +285,20 @@ def generate_code_map(results: Dict[str, Any]) -> Dict[str, Any]:
         return { f['file_info']['filename']: generate_file_code_map(f) for f in results['files'] }
     else:
         return { results['file_info']['filename']: generate_file_code_map(results) }
+
+
+def show_code_structure(results):
+    for f in results['files']:
+        fn = f['file_info']['filename']
+        print(fn)
+        # Classes & their methods
+        for cls in f['structure'].get('classes', []):
+            print(f"  📦 {cls['name']}")
+            for m in cls['methods']:
+                print(f"    └─ {m['name']}()")
+        # Standalone functions
+        for fnc in f['structure'].get('functions', []):
+            print(f"  🔧 {fnc['name']}()")
 
 
 if __name__ == "__main__":
