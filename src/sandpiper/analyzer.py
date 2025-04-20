@@ -1,54 +1,233 @@
 import os
-import jedi
+import ast
+import json
+from collections import defaultdict
 
-def analyze_file(filepath: str) -> dict:
+def analyze_python_code(path):
     """
-    Analyze a single Python file and return a dictionary mapping
-    function and class definitions (using their full names when available)
-    to their reference counts.
+    Analyze Python code at the given path - either a single file or directory.
     """
-    definitions = {}
+    if os.path.isfile(path) and path.endswith('.py'):
+        return analyze_python_file(path)
+    elif os.path.isdir(path):
+        return analyze_python_directory(path)
+    else:
+        raise ValueError(f"Path must be a Python file or directory: {path}")
+
+
+def analyze_python_file(filepath):
+    """
+    Analyze a single Python file comprehensively.
+    """
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             source = f.read()
+        tree = ast.parse(source)
+        lines = source.splitlines()
     except Exception as e:
-        raise Exception(f"Error reading {filepath}: {e}")
-    
-    script = jedi.Script(source, path=filepath)
+        return {'file_info': {'filename': os.path.basename(filepath), 'path': filepath}, 'error': str(e)}
 
-    # Extract definitions (classes, functions, etc.)
-    for d in script.get_names(definitions=True, all_scopes=True):
-        key = d.full_name or d.name
-        definitions.setdefault(key, 0)
-    
-    # Count references for each definition in the file.
-    for name in script.get_names(all_scopes=True):
-        key = name.full_name or name.name
-        if key in definitions:
-            definitions[key] += 1
-    
-    return definitions
+    imported = set()
+    result = {
+        'file_info': {
+            'filename': os.path.basename(filepath),
+            'path': filepath,
+            'size_bytes': os.path.getsize(filepath),
+            'line_count': len(lines)
+        },
+        'structure': {'imports': [], 'classes': [], 'functions': [], 'variables': []},
+        'metrics': {},
+        'references': {},
+        'unused_code': []
+    }
 
-def analyze_codebase(directory: str) -> dict:
-    """
-    Recursively analyze all Python files in the given directory.
-    Returns a dictionary combining the reference counts for definitions
-    across all files.
-    """
-    combined_definitions = {}
+    # ---- IMPORTS ----
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                name = alias.asname or alias.name.split('.')[0]
+                imported.add(name)
+                result['structure']['imports'].append({
+                    'name': alias.name,
+                    'alias': alias.asname,
+                    'line': node.lineno,
+                    'from_import': False
+                })
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ''
+            for alias in node.names:
+                name = alias.asname or alias.name
+                imported.add(name)
+                result['structure']['imports'].append({
+                    'module': module,
+                    'name': alias.name,
+                    'alias': alias.asname,
+                    'line': node.lineno,
+                    'from_import': True
+                })
+
+    # Collect definitions for reference tracking
+    definitions = {}
+
+    # ---- CLASSES & METHODS ----
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name not in imported:
+            cls_name = node.name
+            cls_entry = {
+                'name': cls_name,
+                'line_start': node.lineno,
+                'docstring': ast.get_docstring(node) or '',
+                'methods': [],
+                'references': []
+            }
+            definitions.setdefault(cls_name, []).append(node.lineno)
+            # Methods
+            for child in node.body:
+                if isinstance(child, ast.FunctionDef):
+                    m_name = child.name
+                    methods_entry = {
+                        'name': m_name,
+                        'line': child.lineno,
+                        'docstring': ast.get_docstring(child) or '',
+                        'parameters': [arg.arg for arg in child.args.args],
+                        'references': []
+                    }
+                    cls_entry['methods'].append(methods_entry)
+                    definitions.setdefault(m_name, []).append(child.lineno)
+            result['structure']['classes'].append(cls_entry)
+
+    # ---- FUNCTIONS ----
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name not in imported:
+            # skip methods
+            is_method = False
+            for cls in result['structure']['classes']:
+                if any(m['name'] == node.name and m['line'] == node.lineno for m in cls['methods']):
+                    is_method = True
+                    break
+            if is_method:
+                continue
+            f_name = node.name
+            func_entry = {
+                'name': f_name,
+                'line': node.lineno,
+                'docstring': ast.get_docstring(node) or '',
+                'parameters': [arg.arg for arg in node.args.args],
+                'references': []
+            }
+            definitions.setdefault(f_name, []).append(node.lineno)
+            result['structure']['functions'].append(func_entry)
+
+    # ---- VARIABLES ----
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id not in imported:
+                    v_name = target.id
+                    var_entry = {'name': v_name, 'line': target.lineno, 'references': []}
+                    definitions.setdefault(v_name, []).append(target.lineno)
+                    result['structure']['variables'].append(var_entry)
+
+    # ---- REFERENCE SCANNING ----
+    # Traverse AST and record Name nodes that refer to definitions
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            name = node.id
+            if name in definitions:
+                # skip definition occurrence
+                if node.lineno in definitions[name]:
+                    continue
+                context = lines[node.lineno-1].strip()
+                ref_info = {'line': node.lineno, 'column': node.col_offset, 'context': context}
+                # global references
+                result['references'].setdefault(name, []).append(ref_info)
+                # structure-level
+                # classes
+                for cls in result['structure']['classes']:
+                    if cls['name'] == name:
+                        cls['references'].append(ref_info)
+                    for m in cls['methods']:
+                        if m['name'] == name:
+                            m['references'].append(ref_info)
+                # functions
+                for f in result['structure']['functions']:
+                    if f['name'] == name:
+                        f['references'].append(ref_info)
+                # variables
+                for v in result['structure']['variables']:
+                    if v['name'] == name:
+                        v['references'].append(ref_info)
+
+    # ---- METRICS ----
+    comp = defaultdict(int)
+    def visit(n):
+        if isinstance(n, (ast.If, ast.IfExp)): comp['conditionals'] += 1
+        if isinstance(n, (ast.For, ast.While, ast.AsyncFor)): comp['loops'] += 1
+        if isinstance(n, ast.Try): comp['exceptions'] += 1 + len(n.handlers)
+        if isinstance(n, ast.BoolOp): comp['boolean_ops'] += 1
+        if isinstance(n, ast.Call): comp['function_calls'] += 1
+        for c in ast.iter_child_nodes(n): visit(c)
+    visit(tree)
+    total_cond = comp['conditionals']
+    total_loops = comp['loops']
+    total_ex = comp['exceptions']
+    total_bool = comp['boolean_ops']
+    result['metrics'] = {
+        'conditional_count': total_cond,
+        'loop_count': total_loops,
+        'detailed_complexity': dict(comp),
+        'complexity': 1 + total_cond + total_loops + total_ex + total_bool
+    }
+
+    # ---- SUMMARY ----
+    result['summary'] = {
+        'class_count': len(result['structure']['classes']),
+        'method_count': sum(len(c['methods']) for c in result['structure']['classes']),
+        'function_count': len(result['structure']['functions']),
+        'import_count': len(result['structure']['imports']),
+        'variable_count': len(result['structure']['variables']),
+        'unused_count': len(result['unused_code'])
+    }
+
+    return result
+
+
+def analyze_python_directory(directory):
+    results = {'directory': directory, 'files': [], 'summary': defaultdict(int), 'unused_code': []}
     for root, _, files in os.walk(directory):
         for file in files:
-            if file.endswith(".py"):
-                filepath = os.path.join(root, file)
-                try:
-                    file_definitions = analyze_file(filepath)
-                    for key, count in file_definitions.items():
-                        combined_definitions[key] = combined_definitions.get(key, 0) + count
-                except Exception as e:
-                    print(f"Skipping {filepath} due to error: {e}")
-                    continue
-    return combined_definitions
+            if file.endswith('.py'):
+                res = analyze_python_file(os.path.join(root, file))
+                results['files'].append(res)
+                # aggregate summaries
+                for k in ('class_count','method_count','function_count','import_count','variable_count','unused_count'):
+                    results['summary'][k] += res['summary'].get(k, 0)
+    count = len(results['files']) or 1
+    results['summary']['avg_complexity'] = round(sum(f['metrics']['complexity'] for f in results['files'])/count,2)
+    results['summary']['avg_docstring_coverage'] = round(sum(f['metrics'].get('docstring_coverage',0) for f in results['files'])/count,2)
+    results['module_dependencies'] = find_module_dependencies(results['files'])
+    return results
 
 
-    
- 
+def find_module_dependencies(files):
+    deps = {}
+    for f in files:
+        name = os.path.splitext(f['file_info']['filename'])[0]
+        deps[name] = []
+        for imp in f['structure']['imports']:
+            mod = imp.get('module', imp['name']).split('.')[0]
+            if mod != name and mod in deps and mod not in deps[name]:
+                deps[name].append(mod)
+    return deps
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description='Analyze Python code')
+    parser.add_argument('path', help='Path to analyze')
+    parser.add_argument('--json','-j',help='Output JSON')
+    args = parser.parse_args()
+    res = analyze_python_code(args.path)
+    print(res)
+    if args.json:
+        with open(args.json,'w',encoding='utf-8') as f:
+            json.dump(res,f,indent=2)
