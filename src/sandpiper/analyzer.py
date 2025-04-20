@@ -2,8 +2,9 @@ import os
 import ast
 import json
 from collections import defaultdict
+from typing import Any, Dict, List, Optional, DefaultDict, Union
 
-def analyze_python_code(path):
+def analyze_python_code(path:str) -> Dict[str, Any]:
     """
     Analyze Python code at the given path - either a single file or directory.
     """
@@ -15,7 +16,7 @@ def analyze_python_code(path):
         raise ValueError(f"Path must be a Python file or directory: {path}")
 
 
-def analyze_python_file(filepath):
+def analyze_python_file(filepath:str) -> Dict[str, Any]:
     """
     Analyze a single Python file comprehensively.
     """
@@ -219,6 +220,36 @@ def find_module_dependencies(files):
             if mod != name and mod in deps and mod not in deps[name]:
                 deps[name].append(mod)
     return deps
+
+
+def generate_file_code_map(file_result):
+    """
+    Produce a high-level summary of a single file's structure for LLM consumption.
+    """
+    return {
+        'filename': file_result['file_info']['filename'],
+        'classes': [
+            {
+                'name': c['name'], 'docstring': c['docstring'],
+                'methods': [{ 'name': m['name'], 'docstring': m['docstring'], 'parameters': m['parameters'] } for m in c['methods']]
+            } for c in file_result['structure']['classes']
+        ],
+        'functions': [
+            { 'name': f['name'], 'docstring': f['docstring'], 'parameters': f['parameters'] }
+            for f in file_result['structure']['functions']
+        ],
+        'variables': [v['name'] for v in file_result['structure']['variables']]
+    }
+
+
+def generate_code_map(results):
+    """
+    Produce an aggregated code map across all analyzed files.
+    """
+    if 'directory' in results:
+        return { f['file_info']['filename']: generate_file_code_map(f) for f in results['files'] }
+    else:
+        return { results['file_info']['filename']: generate_file_code_map(results) }
 
 if __name__ == "__main__":
     import argparse
