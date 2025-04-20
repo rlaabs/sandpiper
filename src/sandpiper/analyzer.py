@@ -3,10 +3,6 @@ import ast
 import json
 from collections import defaultdict
 from typing import Any, Dict, List, DefaultDict, Union, Optional
-import matplotlib.pyplot as plt
-import networkx as nx
-
-
 
 def analyze_python_code(path: str) -> Dict[str, Any]:
     """
@@ -201,7 +197,7 @@ def analyze_python_directory(
     directory: str,
     include_imports: bool = False,
     include_imported_code: bool = False,
-    exclude_tests: bool = False
+    exclude_tests: bool = True
 ) -> Dict[str, Any]:
     """
     Analyze all Python files in a directory structure.
