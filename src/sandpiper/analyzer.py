@@ -2,21 +2,35 @@ import os
 import ast
 import json
 from collections import defaultdict
-from typing import Any, Dict, List, DefaultDict, Union, Optional
+from typing import Any, Dict, List, DefaultDict, Union
 
-def analyze_python_code(path: str) -> Dict[str, Any]:
+
+def analyze_python_code(
+    path: str,
+    include_imports: bool = False,
+    include_imported_code: bool = False,
+    exclude_tests: bool = True
+) -> Dict[str, Any]:
     """
     Analyze Python code at the given path - either a single file or directory.
     """
     if os.path.isfile(path) and path.endswith('.py'):
-        return analyze_python_file(path)
+        return analyze_python_file(path, include_imports=include_imports)
     elif os.path.isdir(path):
-        return analyze_python_directory(path)
+        return analyze_python_directory(
+            path,
+            include_imports=include_imports,
+            include_imported_code=include_imported_code,
+            exclude_tests=exclude_tests
+        )
     else:
         raise ValueError(f"Path must be a Python file or directory: {path}")
 
 
-def analyze_python_file(filepath: str) -> Dict[str, Any]:
+def analyze_python_file(
+    filepath: str,
+    include_imports: bool,
+) -> Dict[str, Any]:
     """
     Analyze a single Python file comprehensively.
     """
@@ -190,21 +204,26 @@ def analyze_python_file(filepath: str) -> Dict[str, Any]:
         'unused_count': len(result.get('unused_code', []))
     }
 
+    # Respect include_imports flag
+    if not include_imports:
+        result['structure'].pop('imports', None)
+        result['summary']['import_count'] = 0
+
     return result
 
 
 def analyze_python_directory(
     directory: str,
-    include_imports: bool = False,
-    include_imported_code: bool = False,
-    exclude_tests: bool = True
+    include_imports: bool,
+    include_imported_code: bool,
+    exclude_tests: bool
 ) -> Dict[str, Any]:
     """
     Analyze all Python files in a directory structure.
     Options:
       - include_imports: retain import details in file structures
       - include_imported_code: traverse vendor/virtualenv dirs
-      - exclude_tests: skip test files and directories (paths or names starting with 'test')
+      - exclude_tests: skip test files and directories from scan
     """
     ignore_dirs = {'.venv', 'venv', 'env', '__pycache__', '.git'}
     results: Dict[str, Any] = {
@@ -224,13 +243,11 @@ def analyze_python_directory(
             if not file.endswith('.py'):
                 continue
             # Skip test files
-            if exclude_tests and file.lower().startswith('test_') or file.lower().endswith('_test.py'):
+            if exclude_tests and (file.lower().startswith('test_') or file.lower().endswith('_test.py')):
                 continue
             file_path = os.path.join(root, file)
-            file_result = analyze_python_file(file_path)
-            if not include_imports:
-                file_result['structure'].pop('imports', None)
-                file_result['summary']['import_count'] = 0
+            # Pass include_imports flag into file analysis
+            file_result = analyze_python_file(file_path, include_imports=include_imports)
             results['files'].append(file_result)
             for k, v in file_result['summary'].items():
                 results['summary'][k] += v  # type: ignore
@@ -295,41 +312,3 @@ def show_code_structure(results):
         # Standalone functions
         for fnc in f['structure'].get('functions', []):
             print(f"  🔧 {fnc['name']}()")
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description='Analyze Python code')
-    parser.add_argument('path', help='Path to analyze')
-    parser.add_argument('--json', '-j', help='Output JSON')
-    parser.add_argument(
-        '--include-imports',
-        action='store_true',
-        help='Include import statements in output'
-    )
-    parser.add_argument(
-        '--include-imported-code',
-        action='store_true',
-        help='Include vendor/imported code directories in directory scan'
-    )
-    parser.add_argument(
-        '--exclude-tests',
-        action='store_true',
-        help='Exclude test files and directories from scan'
-    )
-    args = parser.parse_args()
-
-    if os.path.isdir(args.path):
-        res = analyze_python_directory(
-            args.path,
-            include_imports=args.include_imports,
-            include_imported_code=args.include_imported_code,
-            exclude_tests=args.exclude_tests
-        )
-    else:
-        res = analyze_python_file(args.path)
-    print(res)
-    if args.json:
-        with open(args.json, 'w', encoding='utf-8') as f:
-            json.dump(res, f, indent=2)

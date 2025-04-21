@@ -1,32 +1,97 @@
 import argparse
-from .analyzer import analyze_codebase
+import json
+import sys
+
+from sandpiper.analyzer import analyze_python_code, generate_file_code_map, generate_code_map, show_code_structure
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='Analyze a Python codebase to count references for functions and classes using Jedi.'
+    parser = argparse.ArgumentParser(description='Analyze Python code')
+    parser.add_argument(
+        'path',
+        help='Path to a Python file or directory to analyze'
     )
     parser.add_argument(
-        'directory',
-        nargs='?',
-        default='.',
-        help='Directory of the codebase to analyze (default: current directory)'
+        '--json',
+        dest='json_file',
+        metavar='FILE',
+        help='Write output as JSON to this file'
+    )
+    parser.add_argument(
+        '--include-imports',
+        action='store_true',
+        default=False,
+        help='Include import statements in output'
+    )
+    parser.add_argument(
+        '--include-imported-code',
+        action='store_true',
+        default=False,
+        help='Include vendor/imported code directories in directory scan'
+    )
+    parser.add_argument(
+        '--exclude-tests',
+        action='store_true',
+        help='Exclude test files and directories from scan'
+    )
+    # Add new command group
+    output_group = parser.add_argument_group('output formats')
+    output_group.add_argument(
+        '--code-map',
+        action='store_true',
+        help='Generate a simplified code map of the analyzed code'
+    )
+    output_group.add_argument(
+        '--file-code-map',
+        action='store_true',
+        help='Generate a simplified code map for a single file'
+    )
+    output_group.add_argument(
+        '--show-structure',
+        action='store_true',
+        help='Display the code structure in a readable format'
     )
     args = parser.parse_args()
 
-    results = analyze_codebase(args.directory)
-    # Get the maximum lengths for proper alignment
-    max_name_length = max((len(name) for name in results.keys()), default=0)
-    max_count_length = max((len(str(count)) for count in results.values()), default=0)
-    
-    print("\nFunction & Class Reference Analysis")
-    print("=" * 50)
-    print(f"{'Name':<{max_name_length}} | {'References':>{max_count_length}}")
-    print("-" * max_name_length + "-+-" + "-" * max_count_length)
-    
-    for name, count in sorted(results.items(), key=lambda x: x[1], reverse=True):
-        print(f"{name:<{max_name_length}} | {count:>{max_count_length}}")
-    
-    print("\nTotal items analyzed:", len(results))
+    # Delegate to analyzer
+    try:
+        result = analyze_python_code(
+            args.path,
+            include_imports=args.include_imports,
+            include_imported_code=args.include_imported_code,
+            exclude_tests=args.exclude_tests
+        )
+    except ValueError as e:
+        sys.stderr.write(f"Error: {e}\n")
+        sys.exit(1)
 
-if __name__ == "__main__":
+    # Process results based on requested output format
+    if args.show_structure:
+        # Display the structure directly to stdout
+        show_code_structure(result)
+        return
+    
+    # Apply transformations if requested
+    if args.file_code_map and 'file_info' in result:
+        # Single file mode
+        result = generate_file_code_map(result)
+    elif args.code_map:
+        # Directory or single file mode
+        result = generate_code_map(result)
+
+    # Serialize to JSON
+    output = json.dumps(result, indent=2)
+
+    # Write to file or stdout
+    try:
+        if args.json_file:
+            with open(args.json_file, 'w', encoding='utf-8') as f:
+                f.write(output)
+        else:
+            print(output)
+    except IOError as e:
+        sys.stderr.write(f"Error writing output: {e}\n")
+        sys.exit(1)
+
+
+if __name__ == '__main__':
     main()
